@@ -13,7 +13,7 @@ foreach ($line in $changeLog) {
   if ($versionLine) {
     $version = $Matches.1
     if (-Not $found) {
-      if ($version -ne '0.15.0') {
+      if ($version -ne $tag) {
         # version mismatch
         Write-Output "version mismatch: changelog is ${version} but tag is ${tag}"
         exit 1
