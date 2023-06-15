@@ -2,6 +2,8 @@ $tag = $env:GITHUB_REF -replace 'refs/tags/'
 $changelogPath = Join-Path $PSScriptRoot "CHANGELOG.md"
 $outputPath = Join-Path $PSScriptRoot "RELEASE_CHANGELOG.md"
 
+Write-Output "Debug GITHUB_REF =  ${env:GITHUB_REF}  and tag =  ${tag}"
+
 $changeLog = Get-Content $changelogPath
 Out-File -FilePath $outputPath -NoNewline
 
