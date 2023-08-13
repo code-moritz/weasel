@@ -50,6 +50,7 @@ WeaselPanel::WeaselPanel(weasel::UI& ui)
 	dpi(96),
 	hide_candidates(false),
 	pDWR(ui.pdwr()),
+	_UICallback(ui.uiCallback()),
 	_m_gdiplusToken(0)
 {
 	m_iconDisabled.LoadIconW(IDI_RELOAD, STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_DEFAULTCOLOR);
@@ -145,7 +146,7 @@ void WeaselPanel::Refresh()
 void WeaselPanel::_InitFontRes(void)
 {
 	HMONITOR hMonitor = MonitorFromRect(m_inputPos, MONITOR_DEFAULTTONEAREST);
-	UINT dpiX = 0, dpiY = 0;
+	UINT dpiX = 96, dpiY = 96;
 	if (hMonitor)
 		GetDpiForMonitor(hMonitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
 	// prepare d2d1 resources
@@ -160,7 +161,6 @@ void WeaselPanel::_InitFontRes(void)
 	dpi = dpiX;
 }
 
-#ifdef USE_MOUSE_EVENTS
 static HBITMAP CopyDCToBitmap(HDC hDC, LPRECT lpRect)
 {
 	if (!hDC || !lpRect || IsRectEmpty(lpRect)) return NULL;
@@ -211,22 +211,14 @@ LRESULT WeaselPanel::OnMouseActivate(UINT uMsg, WPARAM wParam, LPARAM lParam, BO
 	return MA_NOACTIVATE;
 }
 
-// simulating a key down and up
-static void SendInputKey(WORD key)
-{
-	INPUT inputs[2];
-	inputs[0].type = INPUT_KEYBOARD;
-	inputs[0].ki = {key, 0,0,0,0};
-	inputs[1].type = INPUT_KEYBOARD;
-	inputs[1].ki = {key, 0,KEYEVENTF_KEYUP,0,0};
-	::SendInput(sizeof(inputs) / sizeof(INPUT), inputs, sizeof(INPUT));
-}
-
 LRESULT WeaselPanel::OnMouseWheel(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
 	int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-	if(delta > 0) SendInputKey(33);
-	else	   SendInputKey(34);
+	if(_UICallback && delta != 0)
+	{
+		bool nextpage = delta < 0;
+		_UICallback(NULL, NULL, &nextpage);
+	}
 	bHandled = true;
 	return 0;
 }
@@ -259,8 +251,9 @@ LRESULT WeaselPanel::OnLeftClicked(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL
 				CRect prc = m_layout->GetPrepageRect();
 				if(m_istorepos)	prc.OffsetRect(0, m_offsety_preedit);
 				if(prc.PtInRect(point)) {
-					// to do send pgup
-					SendInputKey(33);
+					bool nextPage = false;
+					if(_UICallback)
+						_UICallback(NULL, NULL, &nextPage);
 					bHandled = true;
 					return 0;
 				}
@@ -270,23 +263,23 @@ LRESULT WeaselPanel::OnLeftClicked(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL
 				CRect prc = m_layout->GetNextpageRect();
 				if(m_istorepos)	prc.OffsetRect(0, m_offsety_preedit);
 				if(prc.PtInRect(point)) {
-					// to do send pgdn
-					SendInputKey(34);
+					bool nextPage = true;
+					if(_UICallback)
+						_UICallback(NULL, NULL, &nextPage);
 					bHandled = true;
 					return 0;
 				}
 			}
 		}
 		// select by click
-		for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
+		for (size_t i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
 			CRect rect = m_layout->GetCandidateRect((int)i);
 			if(m_istorepos)	rect.OffsetRect(0, m_offsetys[i]);
 			rect.InflateRect(m_style.hilite_padding_x, m_style.hilite_padding_y);
 			if (rect.PtInRect(point))
 			{
-				// if not select by number, to be test
-				if(i < MAX_CANDIDATES_COUNT - 1) SendInputKey(0x31 + i);
-				else	SendInputKey(0x30);
+				if(_UICallback)
+					_UICallback(&i, NULL, NULL);
 				break;
 			}
 		}
@@ -295,19 +288,21 @@ LRESULT WeaselPanel::OnLeftClicked(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL
 	return 0;
 }
 
-#ifdef USE_MOUSE_HOVER
 LRESULT WeaselPanel::OnMouseHover(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
+	if(!m_style.mouse_hover_ms) return 0;
 	CPoint point;
 	point.x = GET_X_LPARAM(lParam);
 	point.y = GET_Y_LPARAM(lParam);
 
 	for (size_t i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
 		CRect rect = m_layout->GetCandidateRect((int)i);
-		if (rect.PtInRect(point))
+		if (m_istorepos)
+			rect.OffsetRect(0, m_offsetys[i]);
+		if (rect.PtInRect(point) && i != m_ctx.cinfo.highlighted)
 		{
-			m_ctx.cinfo.highlighted = i;
-			Refresh();
+			if (_UICallback)
+				_UICallback(NULL, &i, NULL);
 		}
 	}
 	bHandled = true;
@@ -316,12 +311,12 @@ LRESULT WeaselPanel::OnMouseHover(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL&
 
 LRESULT WeaselPanel::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
-	if (m_mouse_entry == false)
+	if (m_mouse_entry == false && m_style.mouse_hover_ms)
 	{
 		TRACKMOUSEEVENT tme;
 		tme.cbSize = sizeof(TRACKMOUSEEVENT);
 		tme.dwFlags = TME_HOVER | TME_LEAVE;
-		tme.dwHoverTime = 400; // 400 ms 
+		tme.dwHoverTime = m_style.mouse_hover_ms; // unit: ms 
 		tme.hwndTrack = m_hWnd;
 		TrackMouseEvent(&tme);
 	}
@@ -331,11 +326,8 @@ LRESULT WeaselPanel::OnMouseMove(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& 
 LRESULT WeaselPanel::OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
 {
 	m_mouse_entry = false;
-	Refresh();
 	return 0;
 }
-#endif /*  USE_MOUSE_HOVER */
-#endif /* USE_MOUSE_EVENTS */
 
 void WeaselPanel::_HighlightText(CDCHandle &dc, CRect rc, COLORREF color, COLORREF shadowColor, int radius, BackType type = BackType::TEXT, IsToRoundStruct rd = IsToRoundStruct(), COLORREF bordercolor=TRANS_COLOR)
 {
@@ -802,10 +794,8 @@ void WeaselPanel::DoPaint(CDCHandle dc)
 	}
 	_LayerUpdate(rcw, memDC);
 
-#ifdef USE_MOUSE_EVENTS
 	// turn off WS_EX_TRANSPARENT after drawings, for better resp performance
 	::SetWindowLong(m_hWnd, GWL_EXSTYLE, ::GetWindowLong(m_hWnd, GWL_EXSTYLE) & (~WS_EX_TRANSPARENT));
-#endif
 	// clean objs
 	::DeleteDC(memDC);
 	::DeleteObject(memBitmap);

@@ -2,6 +2,8 @@
 
 #include "WeaselTSF.h"
 #include "CandidateList.h"
+#include "KeyEvent.h"
+#include <math.h>
 
 using namespace std;
 using namespace weasel;
@@ -176,6 +178,7 @@ STDMETHODIMP CCandidateList::GetCurrentPage(UINT * puPage)
 
 STDMETHODIMP CCandidateList::SetSelection(UINT nIndex)
 {
+	_ui->ctx().cinfo.highlighted = nIndex;
 	return S_OK;
 }
 
@@ -325,6 +328,8 @@ void CCandidateList::StartUI()
 		return;
 	}
 
+	if(!_ui->uiCallback())
+		_ui->SetUICallBack([this](size_t* const sel, size_t* const hov, bool* const next) { _tsf->HandleUICallback(sel, hov, next); });
 	pUIElementMgr->BeginUIElement(this, &_pbShow, &uiid);
 	//pUIElementMgr->UpdateUIElement(uiid);
 	if (_pbShow)
@@ -411,4 +416,64 @@ com_ptr<ITfContext> WeaselTSF::_GetUIContextDocument()
 void WeaselTSF::_DeleteCandidateList()
 {
 	_cand->Destroy();
+}
+
+void WeaselTSF::_SelectCandidateOnCurrentPage(size_t index)
+{
+	m_client.SelectCandidateOnCurrentPage(index);
+	// fake a emptyp presskey to get data back and DoEditSession
+	m_client.ProcessKeyEvent(0);
+	DoEditSession(0);
+}
+
+void WeaselTSF::_HandleMousePageEvent(const bool nextPage)
+{
+	// ToDo: if feature new api comes, replace the processes bellow
+	weasel::KeyEvent ke{ 0, 0 };
+	if(_cand->style().paging_on_scroll)
+		ke.keycode = nextPage ? ibus::Page_Down : ibus::Page_Up;
+	else
+	{
+		ke.keycode = nextPage ? ibus::Down : ibus::Up;
+		if(_cand->GetIsReposition())
+		{
+			if(ke.keycode == ibus::Up)
+				ke.keycode = ibus::Down;
+			else if(ke.keycode == ibus::Down)
+				ke.keycode = ibus::Up;
+		}
+	}
+	m_client.ProcessKeyEvent(ke);
+	DoEditSession(0);
+}
+
+void WeaselTSF::_HandleMouseHoverEvent(const size_t index)
+{
+	// ToDo: if feature new api comes, replace the processes bellow
+	UINT current_select = 0;
+	_cand->GetSelection(&current_select);
+	weasel::KeyEvent ke{ 0, 0 };
+	ke.keycode = current_select < index ? ibus::Down : ibus::Up;
+
+	int inc = index > current_select ? 1 : (index < current_select ) ? -1 : 0;
+	if (_cand->GetIsReposition()) inc = -inc;
+	if(index != current_select)
+	{
+		for(auto i=0; i < abs((INT)((INT)index - (INT)current_select)); i++)
+		{
+			_cand->SetSelection(current_select + inc);
+			m_client.ProcessKeyEvent(ke);
+			DoEditSession(0);
+		}
+	}
+}
+
+void WeaselTSF::HandleUICallback(size_t* const sel, size_t* const hov, bool* const next)
+{
+	if (sel)
+		_SelectCandidateOnCurrentPage(*sel);
+	else if (hov)
+		_HandleMouseHoverEvent(*hov);
+	else if (next)
+		_HandleMousePageEvent(*next);
 }

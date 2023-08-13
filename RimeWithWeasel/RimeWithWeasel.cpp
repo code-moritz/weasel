@@ -199,6 +199,14 @@ void RimeWithWeaselHandler::ClearComposition(UINT session_id)
 	m_active_session = session_id;
 }
 
+void RimeWithWeaselHandler::SelectCandidateOnCurrentPage(size_t index, UINT session_id)
+{
+	DLOG(INFO) << "select candidate on current page, session_id = " << session_id << ", index = " << index;
+	if (m_disabled) return;
+	RimeApi* api = rime_get_api();
+	api->select_candidate_on_current_page(session_id, index);
+}
+
 void RimeWithWeaselHandler::FocusIn(DWORD client_caps, UINT session_id)
 {
 	DLOG(INFO) << "Focus in: session_id = " << session_id << ", client_caps = " << client_caps;
@@ -746,13 +754,13 @@ static void _RimeGetBool(RimeConfig* config, char* key, bool cond, T& value, con
 }
 //	parse string option to T type value, with fallback 
 template <typename T>
-void _RimeParseStringOptWithFallback(RimeConfig* config, const std::string key, T& value, const std::map<std::string, T> amap, const T& fallback) {
+void _RimeParseStringOpt(RimeConfig* config, const std::string key, T& value, const std::map<std::string, T> amap) {
 	char str_buff[256] = { 0 };
 	if (RimeConfigGetString(config, key.c_str(), str_buff, sizeof(str_buff) - 1)) {
 		auto it = amap.find(std::string(str_buff));
-		value = (it != amap.end()) ? it->second : fallback;
+		if(it != amap.end())
+			value =  it->second;
 	} 
-	else value = fallback;
 }
 static inline void _abs(int* value) { *value = abs(*value); }	// turn *value to be non-negative
 // get int type value with fallback key fb_key, and func to execute after reading
@@ -798,6 +806,7 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 		style.font_point = 12;
 	_RimeGetIntWithFallback(config, "style/label_font_point", &style.label_font_point, "style/font_point", _abs);
 	_RimeGetIntWithFallback(config, "style/comment_font_point", &style.comment_font_point, "style/font_point", _abs);
+	_RimeGetIntWithFallback(config, "style/mouse_hover_ms", &style.mouse_hover_ms, NULL, _abs);
 	_RimeGetBool(config, "style/inline_preedit", initialize, style.inline_preedit, true, false);
 	_RimeGetBool(config, "style/vertical_auto_reverse", initialize, style.vertical_auto_reverse, true, false);
 	const std::map<std::string, UIStyle::PreeditType> _preeditMap = { 
@@ -805,7 +814,7 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 		{std::string("preview"),		UIStyle::PREVIEW}, 
 		{std::string("preview_all"),	UIStyle::PREVIEW_ALL} 
 	};
-	_RimeParseStringOptWithFallback(config, "style/preedit_type", style.preedit_type, _preeditMap, UIStyle::COMPOSITION);
+	_RimeParseStringOpt(config, "style/preedit_type", style.preedit_type, _preeditMap);
 	const std::map < std::string , UIStyle::AntiAliasMode > _aliasModeMap = {
 		{std::string("force_dword"),	UIStyle::FORCE_DWORD},
 		{std::string("cleartype"),		UIStyle::CLEARTYPE},
@@ -813,16 +822,17 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 		{std::string("aliased"),		UIStyle::ALIASED},
 		{std::string("default"),		UIStyle::DEFAULT}
 	};
-	_RimeParseStringOptWithFallback(config, "style/antialias_mode", style.antialias_mode, _aliasModeMap, UIStyle::DEFAULT);
+	_RimeParseStringOpt(config, "style/antialias_mode", style.antialias_mode, _aliasModeMap);
 	const std::map<std::string, UIStyle::LayoutAlignType> _alignType = {
 		{std::string("top"),	UIStyle::ALIGN_TOP},
 		{std::string("center"),	UIStyle::ALIGN_CENTER},
 		{std::string("bottom"),	UIStyle::ALIGN_BOTTOM}
 	};
-	_RimeParseStringOptWithFallback(config, "style/layout/align_type", style.align_type, _alignType, UIStyle::ALIGN_CENTER);
+	_RimeParseStringOpt(config, "style/layout/align_type", style.align_type, _alignType);
 	_RimeGetBool(config, "style/display_tray_icon", initialize, style.display_tray_icon, true, false);
 	_RimeGetBool(config, "style/ascii_tip_follow_cursor", initialize, style.ascii_tip_follow_cursor, true, false);
 	_RimeGetBool(config, "style/horizontal", initialize, style.layout_type, UIStyle::LAYOUT_HORIZONTAL, UIStyle::LAYOUT_VERTICAL);
+	_RimeGetBool(config, "style/paging_on_scroll", initialize, style.paging_on_scroll, true, false);
 	_RimeGetBool(config, "style/fullscreen", false, style.layout_type, 
 			((style.layout_type == UIStyle::LAYOUT_HORIZONTAL) ? UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN : UIStyle::LAYOUT_VERTICAL_FULLSCREEN), style.layout_type);
 	_RimeGetBool(config, "style/vertical_text", false, style.layout_type, UIStyle::LAYOUT_VERTICAL_TEXT, style.layout_type);
@@ -842,7 +852,7 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 		{std::string("vertical+fullscreen"),		UIStyle::LAYOUT_VERTICAL_FULLSCREEN},
 		{std::string("horizontal+fullscreen"),		UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN}
 	};
-	_RimeParseStringOptWithFallback(config, "style/layout/type", style.layout_type, _layoutMap, style.layout_type);
+	_RimeParseStringOpt(config, "style/layout/type", style.layout_type, _layoutMap);
 	// disable max_width when full screen
 	if( style.layout_type == UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN || style.layout_type == UIStyle::LAYOUT_VERTICAL_FULLSCREEN )
 	{
@@ -922,7 +932,7 @@ static bool _UpdateUIStyleColor(RimeConfig* config, UIStyle& style, std::string 
 			{std::string("rgba"), COLOR_RGBA},
 			{std::string("abgr"), COLOR_ABGR}
 		};
-		_RimeParseStringOptWithFallback(config, (prefix+"/color_format"), fmt, _colorFmt, COLOR_ABGR);
+		_RimeParseStringOpt(config, (prefix+"/color_format"), fmt, _colorFmt);
 		_RimeConfigGetColor32bWithFallback(config, (prefix + "/back_color"), style.back_color, fmt, 0xffffffff);
 		_RimeConfigGetColor32bWithFallback(config, (prefix + "/shadow_color"), style.shadow_color, fmt, TRANSPARENT_COLOR);
 		_RimeConfigGetColor32bWithFallback(config, (prefix + "/prevpage_color"), style.prevpage_color, fmt, TRANSPARENT_COLOR);
