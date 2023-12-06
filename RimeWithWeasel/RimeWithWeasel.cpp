@@ -32,10 +32,19 @@ int expand_ibus_modifier(int m)
 	return (m & 0xff) | ((m & 0xff00) << 16);
 }
 
+#define SHOWN_ASCII (1<<0)
+#define SHOWN_SHAPE (1<<1)
+#define SHOWN_ASCII_PUNCT (1<<2)
+#define SHOWN_SIMPLIFICATION (1<<3)
+#define SHOWN_SCHEMA (1<<4)
+#define SHOWN_ALWAYS    (SHOWN_ASCII|SHOWN_SHAPE|SHOWN_ASCII_PUNCT|SHOWN_SCHEMA|SHOWN_SIMPLIFICATION)
+#define SHOWN_NEVER  0x00
+
 RimeWithWeaselHandler::RimeWithWeaselHandler(UI *ui)
 	: m_ui(ui)
 	, m_active_session(0)
 	, m_disabled(true)
+	, m_show_notifications_when(SHOWN_ALWAYS)
 	, _UpdateUICallback(NULL)
 {
 	_Setup();
@@ -45,6 +54,7 @@ RimeWithWeaselHandler::~RimeWithWeaselHandler()
 {
 }
 
+void _UpdateShowNotificationsWhen(RimeConfig* config, UINT* show_notifications_when);
 void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize);
 bool _UpdateUIStyleColor(RimeConfig* config, UIStyle& style, std::string color = "");
 void _LoadAppOptions(RimeConfig* config, AppOptionsByAppName& app_options);
@@ -96,6 +106,7 @@ void RimeWithWeaselHandler::Initialize()
 		if (m_ui)
 		{
 			_UpdateUIStyle(&config, m_ui, true);
+			_UpdateShowNotificationsWhen(&config, &m_show_notifications_when);
 			m_base_style = m_ui->style();
 		}
 		_LoadAppOptions(&config, m_app_options);
@@ -565,10 +576,17 @@ bool RimeWithWeaselHandler::_ShowMessage(Context& ctx, Status& status) {
 	}
 	if (tips.empty() && !show_icon)
 		return m_ui->IsCountingDown();
-
-	m_ui->Update(ctx, status);
-	m_ui->ShowWithTimeout(1200 + 200 * tips.length());
-	return true;
+	if( ((m_show_notifications_when & SHOWN_ASCII) && (m_message_value == "ascii_mode" || m_message_value == "!ascii_mode"))
+			|| ((m_show_notifications_when & SHOWN_SHAPE) && (m_message_value == "full_shape" || m_message_value == "!full_shape"))
+			|| ((m_show_notifications_when & SHOWN_ASCII_PUNCT) && (m_message_value == "ascii_punct" || m_message_value == "!ascii_punct"))
+			|| ((m_show_notifications_when & SHOWN_SIMPLIFICATION) && (m_message_value == "simplification" || m_message_value == "!simplification"))
+			|| (m_message_type == "schema" && (m_show_notifications_when && SHOWN_SCHEMA))
+			|| m_message_type == "deploy") { m_ui->Update(ctx, status);
+		m_ui->ShowWithTimeout(1200 + 200 * tips.length());
+		return true;
+	} else {
+		return m_ui->IsCountingDown();
+	}
 }
 inline std::string _GetLabelText(const std::vector<Text> &labels, int id, const wchar_t *format)
 {
@@ -851,6 +869,35 @@ static void _RimeGetStringWithFunc(RimeConfig* config, const char* key, std::wst
 	else if(fallback)
 		value = *fallback;
 }
+
+void _UpdateShowNotificationsWhen(RimeConfig* config, UINT* show_notifications_when)
+{
+	char buffer[256] = { 0 };
+	// if not set, shown always as default
+	if (!RimeConfigGetString(config, "show_notifications_when", buffer, 256))
+		*show_notifications_when = SHOWN_ALWAYS;
+	else
+	{
+		std::string noti_str(buffer);
+		if (std::regex_match(noti_str, std::regex(".*always.*")) || noti_str.empty())
+			*show_notifications_when = SHOWN_ALWAYS;
+		else if (noti_str == "never")
+			*show_notifications_when = SHOWN_NEVER;
+		else {
+			*show_notifications_when = SHOWN_NEVER;
+			if (std::regex_match(noti_str, std::regex(".*ascii_punct.*")))
+				*show_notifications_when |= SHOWN_ASCII_PUNCT;
+			if (std::regex_match(noti_str, std::regex(".*ascii_mode.*")))
+				*show_notifications_when |= SHOWN_ASCII;
+			if (std::regex_match(noti_str, std::regex(".*shape.*")))
+				*show_notifications_when |= SHOWN_SHAPE;
+			if (std::regex_match(noti_str, std::regex(".*schema.*")))
+				*show_notifications_when |= SHOWN_SCHEMA;
+			if (std::regex_match(noti_str, std::regex(".*simplification.*")))
+				*show_notifications_when |= SHOWN_SIMPLIFICATION;
+		}
+	}
+}
 // update ui's style parameters, ui has been check before referenced 
 static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 {
@@ -905,6 +952,14 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 	_RimeGetBool(config, "style/vertical_text", false, style.layout_type, UIStyle::LAYOUT_VERTICAL_TEXT, style.layout_type);
 	_RimeGetBool(config, "style/vertical_text_left_to_right", false, style.vertical_text_left_to_right, true, false);
 	_RimeGetBool(config, "style/vertical_text_with_wrap", false, style.vertical_text_with_wrap, true, false);
+	const std::map<std::string, bool> _text_orientation = {
+		{std::string("horizontal"), false},
+		{std::string("vertical"), true}
+	};
+	bool _text_orientation_bool = false;
+	_RimeParseStringOpt(config, "style/text_orientation", _text_orientation_bool, _text_orientation);
+	if(_text_orientation_bool)
+		style.layout_type = UIStyle::LAYOUT_VERTICAL_TEXT;
 	_RimeGetStringWithFunc(config, "style/label_format", style.label_text_format);
 	_RimeGetStringWithFunc(config, "style/mark_text", style.mark_text);
 	_RimeGetIntWithFallback(config, "style/layout/min_width", &style.min_width, NULL, _abs);
@@ -955,7 +1010,8 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 			style.candidate_spacing = max(style.candidate_spacing, style.hilite_padding_x * 2);	// horizontal, if hilite_padding_x over candidate spacing, increase candidate spacing
 		}
 		// hilite_padding_x vs hilite_spacing
-		style.hilite_spacing = max(style.hilite_spacing, style.hilite_padding_x);
+		if(!style.inline_preedit)
+			style.hilite_spacing = max(style.hilite_spacing, style.hilite_padding_x);
 	}
 	else	// LAYOUT_VERTICAL_TEXT
 	{
@@ -967,7 +1023,8 @@ static void _UpdateUIStyle(RimeConfig* config, UI* ui, bool initialize)
 		if (style.vertical_text_with_wrap)
 			style.candidate_spacing = max(style.candidate_spacing, style.hilite_padding_y * 2);
 		// hilite_padding_y vs hilite_spacing
-		style.hilite_spacing = max(style.hilite_spacing, style.hilite_padding_y);
+		if(!style.inline_preedit)
+			style.hilite_spacing = max(style.hilite_spacing, style.hilite_padding_y);
 	}
 	// fix padding and margin settings
 	int scale = style.margin_x < 0 ? -1 : 1;
@@ -1070,9 +1127,11 @@ void RimeWithWeaselHandler::_GetStatus(Status & stat, UINT session_id, Context& 
 				_LoadAppInlinePreeditSet(session_id, true);
 				_UpdateInlinePreeditStatus(session_id);			// in case of inline_preedit set in schema
 				_RefreshTrayIcon(session_id, _UpdateUICallback);	// refresh icon after schema changed
-				ctx.aux.str = stat.schema_name;
-				m_ui->Update(ctx, stat);
-				m_ui->ShowWithTimeout(1200);
+				if (m_show_notifications_when & SHOWN_SCHEMA) {
+					ctx.aux.str = stat.schema_name;
+					m_ui->Update(ctx, stat);
+					m_ui->ShowWithTimeout(1200);
+				}
 			}
 		}
 		else
